@@ -143,10 +143,10 @@ def fetch_ohlcv_range(
 def to_dataframe(rows: List[List[float]]) -> pd.DataFrame:
     cols = ["timestamp", "open", "high", "low", "close", "volume"]
     df = pd.DataFrame(rows, columns=cols)
-    # timestamp em ms UTC → converte para HH:MM dd/mm/aaaa
+    # mantém datetime para processamento
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df["timestamp"] = df["timestamp"].dt.strftime("%H:%M %d/%m/%Y")
     return df
+
 
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
@@ -208,20 +208,29 @@ def merge_existing(new_df: pd.DataFrame, csv_path: str) -> pd.DataFrame:
 
 # ------------------------------- Exportação -------------------------------- #
 
-def export_csv_xlsx(df: pd.DataFrame, symbol: str, timeframe: str, to_csv: bool = True, to_xlsx: bool = False) -> Tuple[Optional[str], Optional[str]]:
+def export_csv_xlsx(
+    df: pd.DataFrame, symbol: str, timeframe: str,
+    to_csv: bool = True, to_xlsx: bool = False
+) -> Tuple[Optional[str], Optional[str]]:
     csv_p = xlsx_p = None
     df_export = df.copy()
-    # Formata timestamp como string apenas para exportação
+
+    # formata timestamp só na exportação
+    df_export["timestamp"] = pd.to_datetime(df_export["timestamp"], utc=True, errors="coerce")
     df_export["timestamp"] = df_export["timestamp"].dt.strftime("%H:%M %d/%m/%Y")
-    
+
     if to_csv:
         csv_p = path_csv(symbol, timeframe)
         df_export.to_csv(csv_p, index=False)
+
     if to_xlsx:
         xlsx_p = path_xlsx(symbol, timeframe)
         with pd.ExcelWriter(xlsx_p, engine="xlsxwriter") as writer:
             df_export.to_excel(writer, index=False, sheet_name="OHLCV")
+
     return csv_p, xlsx_p
+
+
 
 
 # ------------------------------- Pipelines --------------------------------- #
@@ -316,32 +325,82 @@ def incremental_update(
         export_csv_xlsx(df, out_file)
         export_csv_xlsx(df, symbol, tf, to_csv=export_csv, to_xlsx=export_xlsx)
 
-if __name__ == "__main__":
+import os
+
+def pipeline(symbol="BTC/USDT", timeframe="1h", start="2024-01-01", end=None, to_csv=False, to_xlsx=False):
     import ccxt
+    import pandas as pd
     from datetime import datetime, timezone
 
-    # conecta na exchange (Bybit é gratuita para OHLCV público)
     exchange = ccxt.bybit()
 
-    symbol = "BTC/USDT"
-    timeframe = "1h"
+    # Normaliza datas -> sempre YYYY-MM-DDT00:00:00Z
+    if len(start) == 10:  # se for só YYYY-MM-DD
+        start = start + "T00:00:00Z"
+    start_ms = exchange.parse8601(start)
 
-    # define o intervalo de datas corretamente
-    start_str = "2024-01-01T00:00:00Z"
-    start = exchange.parse8601(start_str)
-    end = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+    if end:
+        if len(end) == 10:
+            end = end + "T00:00:00Z"
+        end_ms = exchange.parse8601(end)
+    else:
+        end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
 
-    # busca os dados
-    candles = fetch_ohlcv_range(exchange, symbol, timeframe, start, end)
+    candles = fetch_ohlcv_range(exchange, symbol, timeframe, start_ms, end_ms)
 
-    # converte para dataframe e normaliza
-    import pandas as pd
-    df = normalize(to_dataframe(candles))
+    print(f"✅ Baixados {len(candles)} candles para {symbol} ({timeframe})")
 
-    # exporta CSV/XLSX com timestamp formatado
-    export_csv_xlsx(df, symbol, timeframe, to_csv=True, to_xlsx=False)
+    # exporta se for pedido
+    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
 
-    print(f"Baixados {len(candles)} candles para {symbol} ({timeframe})")
-    print("Primeiros 2 candles:")
-    print(df.head(2))
+    # --- garante que a pasta exista ---
+    os.makedirs("data", exist_ok=True)
 
+    filename_base = f"data/{symbol.replace('/','_')}_{timeframe}"
+
+    if to_csv:
+        df.to_csv(f"{filename_base}.csv", index=False)
+        print(f"📂 Salvo em {filename_base}.csv")
+
+    if to_xlsx:
+        df.to_excel(f"{filename_base}.xlsx", index=False)
+        print(f"📂 Salvo em {filename_base}.xlsx")
+
+    return df
+
+
+
+if __name__ == "__main__":
+    from datetime import datetime, timezone
+
+    # conecta na exchange
+    exchange = ccxt.bybit()
+
+    # ----------------- Perguntas interativas ----------------- #
+    symbols_input = input(f"Digite os símbolos separados por espaço (default: {DEFAULT_SYMBOLS}): ").strip()
+    if symbols_input:
+        symbols = symbols_input.split()
+    else:
+        symbols = DEFAULT_SYMBOLS
+
+    timeframes_input = input(f"Digite os timeframes separados por espaço (default: {SUPPORTED_TIMEFRAMES}): ").strip()
+    if timeframes_input:
+        timeframes = timeframes_input.split()
+    else:
+        timeframes = SUPPORTED_TIMEFRAMES
+
+    start_input = input("Data de início (ISO, ex: 2024-01-01T00:00:00Z, default: 2024-01-01T00:00:00Z): ").strip()
+    start = exchange.parse8601(start_input) if start_input else exchange.parse8601("2024-01-01T00:00:00Z")
+
+    end_input = input("Data de fim (ISO, ex: 2024-08-17T00:00:00Z, default: agora): ").strip()
+    end = exchange.parse8601(end_input) if end_input else int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+    # ----------------- Loop de coleta ----------------- #
+    for symbol in symbols:
+        for timeframe in timeframes:
+            print(f"[info] Coletando {symbol} {timeframe}...")
+            candles = fetch_ohlcv_range(exchange, symbol, timeframe, start, end)
+            df = normalize(to_dataframe(candles))
+            export_csv_xlsx(df, symbol, timeframe, to_csv=True, to_xlsx=False)
+            print(f"[ok] {symbol} {timeframe} ⇒ {len(df)} linhas")
