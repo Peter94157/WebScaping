@@ -243,45 +243,6 @@ def export_csv_xlsx(
 
     return csv_p, xlsx_p
 
-def save_to_db(df: pd.DataFrame, table_name="crypt"):
-    conn = connect_db()
-    cursor = conn.cursor()
-
-    # cria a tabela se não existir
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            timestamp DATETIME,
-            open DOUBLE,
-            high DOUBLE,
-            low DOUBLE,
-            close DOUBLE,
-            volume DOUBLE
-        )
-    """)
-
-    # insere os dados
-    sql = f"INSERT INTO {table_name} (timestamp, open, high, low, close, volume) VALUES (%s, %s, %s, %s, %s, %s)"
-    data = [
-        (
-            row["timestamp"].to_pydatetime(),
-            float(row["open"]),
-            float(row["high"]),
-            float(row["low"]),
-            float(row["close"]),
-            float(row["volume"])
-        )
-        for _, row in df.iterrows()
-    ]
-    cursor.executemany(sql, data)
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    print(f"💾 Inseridos {len(df)} registros em '{table_name}'")
-
-
 
 # ------------------------------- Pipelines --------------------------------- #
 
@@ -413,7 +374,7 @@ def pipeline(symbol="BTC/USDT", timeframe="1h", start="2024-01-01", end=None, to
 
     # volume inteiro
     df["volume_usdt"] = df["volume"].astype(int)
-    df["symbol"] = symbol
+    
 
     # Cor dos candles
     def candle_color(row):
@@ -428,15 +389,34 @@ def pipeline(symbol="BTC/USDT", timeframe="1h", start="2024-01-01", end=None, to
 
     # reordena colunas
     df = df[[
-        "data", "hora", "open", "high", "low", "close",
+        "data", "hora","volume_usdt","low", "high", "open",  "close",
         "change_value", "change_percent",
         "range_value", "range_percent",
-        "volume_usdt","candle_color","symbol"
+        "candle_color"
     ]]
 
     # ordena para o mais recente primeiro
     df = df.sort_values(["data","hora"], ascending=[False,False]).reset_index(drop=True)
 
+        # Função de formatação
+    def format_asset_value(value: float) -> float:
+        """Formata o valor do ativo de acordo com a faixa de preço."""
+        if value < 0.01:
+            return round(value, 6)
+        elif 0.01 <= value < 0.1:
+            return round(value, 5)
+        elif 0.1 <= value < 1:
+            return round(value, 4)
+        elif 1 <= value < 1000:
+            return round(value, 3)
+        else:  # value >= 1000
+            return round(value, 2)
+
+    # Aplicando ao DataFrame
+    df["close"] = df["close"].apply(format_asset_value)
+    df["open"]  = df["open"].apply(format_asset_value)
+    df["high"]  = df["high"].apply(format_asset_value)
+    df["low"]   = df["low"].apply(format_asset_value)
 
 
     # --- garante que a pasta exista ---
@@ -444,13 +424,16 @@ def pipeline(symbol="BTC/USDT", timeframe="1h", start="2024-01-01", end=None, to
     filename_base = f"../data/{symbol.replace('/','_')}_{timeframe}"
     
     if to_csv:
+        # df = df.drop(columns=["symmbol"])
         df.to_csv(f"{filename_base}.csv", index=False)
         print(f"📂 Salvo em {filename_base}.csv")
 
     if to_xlsx:
+        # df = df.drop(columns=["symmbol"])
         df.to_excel(f"{filename_base}.xlsx", index=False)
         print(f"📂 Salvo em {filename_base}.xlsx")
 
+    df["symbol"] = symbol
     return df
 
 

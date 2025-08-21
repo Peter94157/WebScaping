@@ -15,43 +15,49 @@ def salvar_no_mysql(df, tabela="ohlcv"):
     )
     cursor = conn.cursor()
 
-
+    # Cria tabela se não existir, já na ordem correta
     cursor.execute(f"""
     CREATE TABLE IF NOT EXISTS {tabela} (
         data DATE NOT NULL,
         hora TIME NOT NULL,
-        symbol VARCHAR(50),
-        candle_color VARCHAR(7),
-        open DECIMAL(18,4),
-        high DECIMAL(18,4),
+        volume_usdt DECIMAL(18,4),
         low DECIMAL(18,4),
+        high DECIMAL(18,4),
+        open DECIMAL(18,4),
         close DECIMAL(18,4),
         change_value DECIMAL(18,4),
         change_percent DECIMAL(10,4),
         range_value DECIMAL(18,4),
         range_percent DECIMAL(10,4),
-        volume_usdt int
+        candle_color VARCHAR(7),
+        symbol VARCHAR(50),
+        PRIMARY KEY (data, hora, symbol)  -- chave única para evitar duplicados
     )
     """)
+
+    # Limpa antes de inserir (assim só fica o último dataset)
+    cursor.execute(f"TRUNCATE TABLE {tabela}")
 
     # Loop pelas linhas do DataFrame
     for _, row in df.iterrows():
         cursor.execute(f"""
         INSERT INTO {tabela} 
-            (data, hora, symbol,candle_color, open, high, low, close,
-             change_value, change_percent, range_value, range_percent, volume_usdt)
+        (data, hora, volume_usdt, low, high, open, close,
+         change_value, change_percent, range_value, range_percent, candle_color, symbol)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            open=VALUES(open), high=VALUES(high), low=VALUES(low), 
-            close=VALUES(close), candle_color=VALUES(candle_color),
+            volume_usdt=VALUES(volume_usdt),
+            low=VALUES(low), high=VALUES(high),
+            open=VALUES(open), close=VALUES(close),
             change_value=VALUES(change_value), change_percent=VALUES(change_percent),
             range_value=VALUES(range_value), range_percent=VALUES(range_percent),
-            volume_usdt=VALUES(volume_usdt)
+            candle_color=VALUES(candle_color)
         """, (
-            row["data"],row["hora"], row["symbol"],row["candle_color"], row["open"], row["high"],
-            row["low"], row["close"],
+            row["data"], row["hora"], row["volume_usdt"],
+            row["low"], row["high"], row["open"], row["close"],
             row["change_value"], row["change_percent"],
-            row["range_value"], row["range_percent"], row["volume_usdt"]
+            row["range_value"], row["range_percent"],
+            row["candle_color"], row["symbol"]
         ))
 
     conn.commit()
@@ -69,8 +75,7 @@ def run_pipeline_thread(symbol, timeframe, start, end, to_csv, to_xlsx):
     # volta para tela
     frame_loading.pack_forget()
     frame_selection.pack(fill="both", expand=True)
-    messagebox.showinfo("Concluído", "Pipeline executado e salvo no MySQL com sucesso!")
-
+    print(f"💾 Inseridos {len(df)} registros")
 
 # --- Função para iniciar o pipeline ---
 def run_pipeline_gui():
